@@ -361,7 +361,8 @@ hue; everything else holds still.
 | `mono` | weight, dim and reverse only; also chosen when `NO_COLOR` is set |
 | any other name | a theme file, below |
 
-`/theme` lists every theme with a swatch of its colours on your terminal;
+`/theme` lists every theme with a swatch of its colours on your terminal
+(colourless when `NO_COLOR` chose `mono`);
 Enter uses one and saves it to `ui.toml` as `theme = "<name>"`. `/theme <name>`
 does the same directly, and `/settings` steps through the built-ins. For one
 run use `--theme` (also `AETHER_THEME`). The flag wins over `NO_COLOR`, which
