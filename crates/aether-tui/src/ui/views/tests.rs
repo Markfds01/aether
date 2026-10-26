@@ -1995,11 +1995,11 @@ fn usage_view_shows_remaining_credit_and_reset_time() {
 
 /// Coloured swatch dots on the Nord and Gruvbox rows of `/theme` in `app`.
 fn palette_row_dots(app: &App) -> Vec<usize> {
-    use ratatui::style::Color;
     let view = super::theme::ThemeView::new(app);
     let terminal = draw(&view, app, 120);
     let buffer = terminal.backend().buffer();
     let dot = app.theme.glyphs().running;
+    let reset = ratatui::buffer::Cell::default().fg;
     let width = buffer.area.width;
     (0..buffer.area.height)
         .filter_map(|y| {
@@ -2007,7 +2007,7 @@ fn palette_row_dots(app: &App) -> Vec<usize> {
             (row.contains("Nord, follows") || row.contains("Gruvbox, follows")).then(|| {
                 (0..width)
                     .map(|x| &buffer[(x, y)])
-                    .filter(|cell| cell.symbol() == dot && cell.fg != Color::Reset)
+                    .filter(|cell| cell.symbol() == dot && cell.fg != reset)
                     .count()
             })
         })
