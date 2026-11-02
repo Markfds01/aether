@@ -11,6 +11,15 @@ use super::tokens::{Background, Rgb, TerminalPalette};
 /// The probe's deadline: long enough for a local terminal, short enough to hide.
 pub const PROBE_DEADLINE: Duration = Duration::from_millis(100);
 
+/// The deadline under tmux or SSH, where the reply crosses another hop. A
+/// terminal that answers DA1 ends the wait at once (tmux 3.2a does), so this
+/// is only paid by one that stays silent; it stays well under a second.
+pub const REMOTE_PROBE_DEADLINE: Duration = Duration::from_millis(400);
+
+/// Overrides for the probed colours: `#rrggbb`, `rrggbb` or `rgb:RR/GG/BB`.
+pub const BG_ENV: &str = "AETHER_TERMINAL_BG";
+pub const FG_ENV: &str = "AETHER_TERMINAL_FG";
+
 /// Default fg, default bg, then DA1. Every terminal answers DA1 and replies
 /// arrive in order, so its answer means nothing else is coming.
 const QUERY: &[u8] = b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[c";
@@ -30,12 +39,100 @@ const TRUECOLOR_QUERY: &[u8] =
 
 pub fn probe_terminal(deadline: Duration, depth: ColorDepth) -> TerminalProbe {
     match query_tty(deadline, query_for(depth)) {
-        Ok(reply) => parse_probe_reply(&reply),
+        Ok(reply) => {
+            let probe = parse_probe_reply(&reply);
+            if probe.palette.is_none() {
+                log_missing_palette(&reply, deadline);
+            }
+            probe
+        }
         Err(error) => {
-            tracing::debug!(%error, "terminal probe failed; using fallbacks");
+            tracing::warn!(%error, "terminal probe failed; using fallback colours");
             TerminalProbe::default()
         }
     }
+}
+
+/// Said once, at startup: why the user-message band is the fallback grey.
+fn log_missing_palette(reply: &[u8], deadline: Duration) {
+    let why = if reply.is_empty() {
+        format!("no reply within {} ms", deadline.as_millis())
+    } else if has_device_attributes(reply) {
+        "the terminal answered device attributes only (tmux before 3.4 does not forward colour queries)"
+            .to_owned()
+    } else {
+        "the reply was incomplete".to_owned()
+    };
+    tracing::info!(
+        "terminal palette unknown ({why}); using fallback colours. Set {BG_ENV}=#rrggbb \
+         (and {FG_ENV}) to give the exact ones"
+    );
+}
+
+/// The deadline for this environment: longer under tmux or SSH.
+fn deadline_for(var: impl Fn(&str) -> Option<String>) -> Duration {
+    let set = |name: &str| var(name).is_some_and(|v| !v.is_empty());
+    if set("TMUX") || set("SSH_CONNECTION") || set("SSH_TTY") {
+        REMOTE_PROBE_DEADLINE
+    } else {
+        PROBE_DEADLINE
+    }
+}
+
+/// A colour from an override variable; `None` when unset or unparseable.
+fn parse_override(value: &str) -> Option<Rgb> {
+    let value = value.trim();
+    let hex = value.strip_prefix('#').unwrap_or(value);
+    if hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        let channel = |at: usize| u8::from_str_radix(&hex[at..at + 2], 16).ok();
+        return Some(Rgb(channel(0)?, channel(2)?, channel(4)?));
+    }
+    parse_osc_color(value)
+}
+
+/// The palette an override pair gives: the background decides, and a missing
+/// foreground is the probed one, else black or white by contrast.
+fn override_palette(
+    bg: Option<Rgb>,
+    fg: Option<Rgb>,
+    probed: Option<TerminalPalette>,
+) -> Option<TerminalPalette> {
+    let bg = bg?;
+    let fg = fg.or(probed.map(|p| p.fg)).unwrap_or_else(|| {
+        if contrast_ratio(bg, Rgb(0, 0, 0)) > contrast_ratio(bg, Rgb(255, 255, 255)) {
+            Rgb(0, 0, 0)
+        } else {
+            Rgb(255, 255, 255)
+        }
+    });
+    Some(TerminalPalette { fg, bg })
+}
+
+/// The startup probe: the environment's deadline, then `AETHER_TERMINAL_BG` /
+/// `AETHER_TERMINAL_FG` over whatever the terminal said. With a background
+/// given and no truecolor question left to ask, the terminal is not queried.
+pub fn startup_probe(depth: ColorDepth) -> TerminalProbe {
+    let var = |name: &str| std::env::var(name).ok();
+    let colour = |name: &str| {
+        let value = var(name)?;
+        let parsed = parse_override(&value);
+        if parsed.is_none() {
+            tracing::warn!("{name}={value:?} is not #rrggbb; ignoring it");
+        }
+        parsed
+    };
+    let (bg, fg) = (colour(BG_ENV), colour(FG_ENV));
+    if bg.is_some() && depth != ColorDepth::Indexed256 {
+        return TerminalProbe {
+            palette: override_palette(bg, fg, None),
+            truecolor: false,
+        };
+    }
+    let mut probe = probe_terminal(deadline_for(var), depth);
+    if bg.is_some() {
+        probe.palette = override_palette(bg, fg, probe.palette);
+    }
+    probe
 }
 
 /// Only a terminal claiming 256 colours is asked whether it does truecolor.
@@ -272,6 +369,108 @@ pub fn background_of(palette: Option<TerminalPalette>, colorfgbg: Option<&str>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| (*v).to_owned())
+        }
+    }
+
+    #[test]
+    fn tmux_and_ssh_get_the_longer_deadline() {
+        assert_eq!(deadline_for(env(&[])), PROBE_DEADLINE);
+        assert_eq!(deadline_for(env(&[("TMUX", "")])), PROBE_DEADLINE);
+        for var in ["TMUX", "SSH_CONNECTION", "SSH_TTY"] {
+            assert_eq!(
+                deadline_for(env(&[(var, "x")])),
+                REMOTE_PROBE_DEADLINE,
+                "{var}"
+            );
+        }
+        assert!(REMOTE_PROBE_DEADLINE < Duration::from_millis(1000));
+    }
+
+    #[test]
+    fn overrides_parse_and_win_over_the_probe() {
+        assert_eq!(parse_override("#300a24"), Some(Rgb(0x30, 0x0a, 0x24)));
+        assert_eq!(parse_override(" FFFFFF "), Some(Rgb(255, 255, 255)));
+        assert_eq!(parse_override("rgb:30/0a/24"), Some(Rgb(0x30, 0x0a, 0x24)));
+        for bad in ["", "#fff", "#gggggg", "red", "#1234567"] {
+            assert_eq!(parse_override(bad), None, "{bad:?}");
+        }
+        let probed = TerminalPalette {
+            fg: Rgb(1, 2, 3),
+            bg: Rgb(4, 5, 6),
+        };
+        let aubergine = Rgb(0x30, 0x0a, 0x24);
+        let bg = Some(aubergine);
+        assert_eq!(
+            override_palette(None, Some(Rgb(9, 9, 9)), Some(probed)),
+            None
+        );
+        assert_eq!(
+            override_palette(bg, None, Some(probed)),
+            Some(TerminalPalette {
+                fg: Rgb(1, 2, 3),
+                bg: aubergine
+            })
+        );
+        assert_eq!(
+            override_palette(bg, None, None).map(|p| p.fg),
+            Some(Rgb(255, 255, 255))
+        );
+        assert_eq!(
+            override_palette(Some(Rgb(250, 250, 250)), None, None).map(|p| p.fg),
+            Some(Rgb(0, 0, 0))
+        );
+    }
+
+    #[test]
+    fn a_late_reply_is_read_and_a_silent_terminal_times_out() {
+        let pipe = || {
+            let (r, w) = nix::unistd::pipe().expect("a pipe");
+            nix::fcntl::fcntl(
+                &r,
+                nix::fcntl::FcntlArg::F_SETFL(nix::fcntl::OFlag::O_NONBLOCK),
+            )
+            .expect("nonblocking");
+            (File::from(r), File::from(w))
+        };
+        let (mut reader, mut writer) = pipe();
+        let late = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(60));
+            writer
+                .write_all(
+                    b"\x1b]10;rgb:ffff/ffff/ffff\x1b\\\x1b]11;rgb:3030/0a0a/2424\x07\x1b[?1;2c",
+                )
+                .unwrap();
+        });
+        let reply = read_reply(&mut reader, Instant::now() + Duration::from_secs(5)).unwrap();
+        late.join().unwrap();
+        assert_eq!(
+            parse_probe_reply(&reply).palette,
+            Some(TerminalPalette {
+                fg: Rgb(255, 255, 255),
+                bg: Rgb(0x30, 0x0a, 0x24)
+            })
+        );
+        // Nothing arrives: the deadline, not a hang, ends the read.
+        let (mut reader, _writer) = pipe();
+        let started = Instant::now();
+        let reply = read_reply(&mut reader, started + Duration::from_millis(30)).unwrap();
+        assert!(reply.is_empty());
+        assert!(started.elapsed() < Duration::from_secs(2));
+        // DA1 alone (tmux 3.2a) returns at once with no palette.
+        let (mut reader, mut writer) = pipe();
+        writer.write_all(b"\x1b[?1;2c").unwrap();
+        let started = Instant::now();
+        let reply = read_reply(&mut reader, started + Duration::from_secs(5)).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(parse_probe_reply(&reply).palette, None);
+    }
 
     #[test]
     fn only_a_256_colour_terminal_is_asked_about_truecolor() {

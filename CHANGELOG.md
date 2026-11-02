@@ -6,6 +6,15 @@ release is also the text of its GitHub release.
 
 ## Unreleased
 
+### Fixed
+
+- `aether tui` keeps the user-message highlight when the terminal does not
+  report its colours (tmux before 3.4, SSH, terminals without OSC 10/11):
+  the band falls back to a grey chosen from the light/dark guess and the
+  colour depth. The probe waits up to 400 ms under tmux or SSH, a failed
+  probe is logged once, and `AETHER_TERMINAL_BG` / `AETHER_TERMINAL_FG` set
+  the colours directly (mengsig/aether#377).
+
 ## 1.2.10
 
 Released 2026-11-02. A patch release for an overloaded host. `status`

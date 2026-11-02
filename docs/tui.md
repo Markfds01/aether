@@ -403,6 +403,24 @@ wins over the saved choice. `dusk`, `dawn` and `monochrome` are still accepted
 as `dark`, `light` and `mono`. When the terminal does not report its colours,
 `auto` falls back to `COLORFGBG`, then dark.
 
+Some terminals never report their colours: tmux before 3.4 does not forward
+the query to the outer terminal (it answers only when the pane has explicit
+`window-style` colours), and a slow SSH link or a terminal without OSC 10/11
+may miss the deadline. The probe waits 100 ms, or 400 ms under tmux or SSH
+(`TMUX`, `SSH_CONNECTION`, `SSH_TTY`); a terminal that answers device
+attributes alone ends the wait at once. Without a palette the user-message
+band, composer and approval blocks still get a background chosen from the
+light/dark guess above: xterm grey #303030 (256-colour index 236) on dark,
+#e4e4e4 (254) on light, and on 16-colour terminals the terminal's own bright
+black on dark and white on light. `mono` stays plain. Aether does not send
+the query through tmux's DCS passthrough: tmux does not hand the outer
+terminal's reply back to the pane, and before tmux 3.3 passthrough cannot be
+switched off, so it could print stray characters. To give the exact colours
+instead, set `AETHER_TERMINAL_BG=#rrggbb` (and optionally
+`AETHER_TERMINAL_FG=#rrggbb`); they are used in place of the probe, and
+without a foreground Aether picks black or white. An unparseable value is
+logged and ignored. When the palette cannot be read, the log says so once.
+
 When the terminal reports its background, each hue is made readable against it
 (WCAG AA, 4.5:1); the pulse dims below that between its peaks, and quiet text
 and rules are blended from the terminal's own colours. Colours are reduced to
