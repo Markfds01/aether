@@ -108,8 +108,12 @@ pub struct Tokens {
     pub hues: [Style; HUES],
     /// Commands and paths: the foreground leaning toward the code hue.
     pub command: Style,
-    /// Background-only style; `None` when the palette is unknown.
+    /// Background-only style; `None` only in mono. Without a probed palette it
+    /// is the conservative [`fallback_band`] for the light/dark guess.
     pub tint: Option<Color>,
+    /// Foreground pinned on a [`fallback_band`] only: the band is chosen from
+    /// a guess, so the default text colour is not trusted to read on it.
+    pub tint_fg: Option<Color>,
     pub selection: Style,
     pub track: Style,
     pub rule: Style,
@@ -236,7 +240,8 @@ impl Default for Theme {
 
 impl Theme {
     /// The §5.2 table for `spec`. Blends need the probed palette and a depth
-    /// above ANSI-16; without them tint and pulse drop out.
+    /// above ANSI-16; without them the pulse holds still and the tint is the
+    /// [`fallback_band`].
     pub fn resolve(spec: ThemeSpec) -> Theme {
         let background = match spec.mode {
             ThemeMode::Dark => Background::Dark,
@@ -428,11 +433,19 @@ impl Theme {
         self.tokens.secondary.patch(self.emphasis())
     }
 
-    /// Background for user/composer/approval blocks; plain when the palette is unknown.
+    /// Background for user/composer/approval blocks; plain only in mono.
     pub fn tint(&self) -> Style {
         match self.tokens.tint {
-            Some(bg) => Style::new().bg(bg),
+            Some(bg) => self.band(bg),
             None => Style::new(),
+        }
+    }
+
+    /// `bg` as a band, with the pinned foreground when the band is a guess.
+    fn band(&self, bg: Color) -> Style {
+        match self.tokens.tint_fg {
+            Some(fg) => Style::new().bg(bg).fg(fg),
+            None => Style::new().bg(bg),
         }
     }
 
@@ -440,7 +453,7 @@ impl Theme {
     /// a reversed block would outweigh everything else in mono.
     pub fn selected(&self) -> Style {
         match self.tokens.tint {
-            Some(bg) => Style::new().bg(bg),
+            Some(bg) => self.band(bg),
             None => Style::new().add_modifier(Modifier::UNDERLINED),
         }
     }
@@ -452,7 +465,7 @@ impl Theme {
             (true, _) => self
                 .accent()
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED | Modifier::REVERSED),
-            (false, Some(bg)) => Style::new().bg(bg),
+            (false, Some(bg)) => self.band(bg),
             (false, None) => Style::new().add_modifier(Modifier::UNDERLINED),
         }
     }
@@ -500,6 +513,7 @@ fn mono_tokens() -> Tokens {
         hues,
         command: Style::new(),
         tint: None,
+        tint_fg: None,
         selection: Style::new().add_modifier(Modifier::REVERSED),
         track: dim,
         rule: dim,
@@ -529,7 +543,8 @@ fn color_tokens(spec: ThemeSpec, background: Background) -> Tokens {
         title: Style::new().add_modifier(Modifier::BOLD),
         hues: hue_styles,
         command: Style::new(),
-        tint: None,
+        tint: Some(fallback_band(spec.depth, background)),
+        tint_fg: Some(fallback_text(spec.depth, background)),
         selection: Style::new().add_modifier(Modifier::REVERSED),
         track: dim,
         rule: dim,
@@ -550,6 +565,7 @@ fn color_tokens(spec: ThemeSpec, background: Background) -> Tokens {
         secondary: fg(quiet),
         command: fg(command),
         tint: Some(band_color(p.bg, spec.depth, background)),
+        tint_fg: None,
         selection: Style::new().bg(best_color(
             blend(rgbs[Hue::Accent as usize], p.bg, SELECTION_ALPHA),
             spec.depth,
@@ -562,6 +578,40 @@ fn color_tokens(spec: ThemeSpec, background: Background) -> Tokens {
 }
 
 const MIN_BAND_CONTRAST: f64 = 1.15;
+
+/// The user-message band when the terminal's own colours are unknown (the
+/// probe failed, as in tmux < 3.4 or over a slow link) or ANSI-16 cannot show
+/// a blend. It follows only the light/dark guess and the depth, so a message
+/// never loses its highlight:
+///
+/// - truecolor and 256 colours: a fixed xterm grey, #303030 (236) on dark and
+///   #e4e4e4 (254) on light. They stand out from near-black and near-white
+///   backgrounds alike, and a pinned text colour keeps them readable even
+///   when the guess is wrong. Truecolor terminals take the same index; no
+///   blend is possible without a bg.
+/// - ANSI-16: the terminal's own bright black on dark and white (light grey)
+///   on light, the only greys a 16-colour terminal offers. A theme that maps
+///   one of them to its background just shows no band, as before.
+fn fallback_band(depth: ColorDepth, background: Background) -> Color {
+    match (depth, background) {
+        (ColorDepth::Basic16, Background::Dark) => Color::DarkGray,
+        (ColorDepth::Basic16, Background::Light) => Color::Gray,
+        (_, Background::Dark) => Color::Indexed(236),
+        (_, Background::Light) => Color::Indexed(254),
+    }
+}
+
+/// Text colour pinned on [`fallback_band`]: white on the dark band, black on
+/// the light one, so a wrong light/dark guess still leaves readable text (a
+/// dark block on a light terminal, not black on dark grey).
+fn fallback_text(depth: ColorDepth, background: Background) -> Color {
+    match (depth, background) {
+        (ColorDepth::Basic16, Background::Dark) => Color::White,
+        (ColorDepth::Basic16, Background::Light) => Color::Black,
+        (_, Background::Dark) => Color::Indexed(255),
+        (_, Background::Light) => Color::Indexed(232),
+    }
+}
 
 fn band_color(bg: Rgb, depth: ColorDepth, background: Background) -> Color {
     debug_assert!(depth != ColorDepth::Basic16, "ANSI-16 shows no band");
@@ -784,7 +834,10 @@ mod tests {
                 theme.background() == Background::Dark
             );
             let basic = Theme::resolve(spec(ThemeMode::Auto, ColorDepth::Basic16, palette));
-            assert_eq!(basic.tint().bg, None, "ANSI-16 cannot show index {index}");
+            assert!(
+                matches!(basic.tint().bg, Some(Color::DarkGray | Color::Gray)),
+                "ANSI-16 cannot show index {index}"
+            );
             let theme = Theme::resolve(spec(ThemeMode::Auto, ColorDepth::Truecolor, palette));
             let tint = match theme.background() {
                 Background::Dark => blend(WHITE, bg, 0.07),
@@ -861,7 +914,7 @@ mod tests {
                 assert_eq!(style.bg, None, "{name} in {s:?}");
             }
             let tint = theme.tint();
-            assert_eq!(tint.fg, None, "{s:?}");
+            assert_eq!(tint.fg, theme.tokens.tint_fg, "{s:?}");
             assert!(tint.add_modifier.is_empty(), "{s:?}");
             assert_eq!(theme.selection().fg, None, "{s:?}");
         }
@@ -981,7 +1034,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_probe_drops_tint_and_holds_the_pulse_still() {
+    fn a_failed_probe_keeps_a_fallback_tint_and_holds_the_pulse_still() {
         for depth in [
             ColorDepth::Truecolor,
             ColorDepth::Indexed256,
@@ -989,11 +1042,11 @@ mod tests {
         ] {
             let theme = Theme::resolve(spec(ThemeMode::Auto, depth, None));
             let dim = Style::new().add_modifier(Modifier::DIM);
-            assert_eq!(theme.tint(), Style::new());
             assert_eq!(
-                theme.selected(),
-                Style::new().add_modifier(Modifier::UNDERLINED)
+                theme.tint().bg,
+                Some(fallback_band(depth, Background::Dark))
             );
+            assert_eq!(theme.selected(), theme.tint());
             assert_eq!(theme.secondary(), dim);
             assert_eq!(theme.pulse(0.0), theme.running());
             assert_eq!(theme.pulse(0.7), theme.running());
@@ -1006,13 +1059,67 @@ mod tests {
             ColorDepth::Basic16,
             Some(GITHUB_DARK),
         ));
-        assert_eq!(
-            basic.selected(),
-            Style::new().add_modifier(Modifier::UNDERLINED)
-        );
-        assert_eq!(basic.tint().bg, None);
+        assert_eq!(basic.tint().bg, Some(Color::DarkGray));
+        assert_eq!(basic.selected(), basic.tint());
         assert_eq!(basic.pulse(1.0), basic.running());
         assert_eq!(basic.shimmer(1.0), basic.secondary());
+    }
+
+    #[test]
+    fn a_guessed_band_pins_a_contrasting_text_colour_even_when_the_guess_is_wrong() {
+        for depth in [
+            ColorDepth::Truecolor,
+            ColorDepth::Indexed256,
+            ColorDepth::Basic16,
+        ] {
+            for hint in [Background::Dark, Background::Light] {
+                let theme = Theme::resolve(ThemeSpec {
+                    background_hint: hint,
+                    ..spec(ThemeMode::Auto, depth, None)
+                });
+                let style = theme.tint();
+                assert_eq!(style.fg, Some(fallback_text(depth, hint)), "{depth:?}");
+                assert_ne!(style.fg, style.bg);
+                assert_eq!(theme.selected(), style);
+            }
+        }
+        let known = Theme::resolve(spec(
+            ThemeMode::Auto,
+            ColorDepth::Truecolor,
+            Some(GITHUB_DARK),
+        ));
+        assert_eq!(known.tint().fg, None);
+    }
+
+    #[test]
+    fn the_fallback_band_follows_the_light_dark_guess_and_the_depth() {
+        let hinted = |depth, hint| {
+            Theme::resolve(ThemeSpec {
+                background_hint: hint,
+                ..spec(ThemeMode::Auto, depth, None)
+            })
+            .tint()
+            .bg
+        };
+        for depth in [ColorDepth::Truecolor, ColorDepth::Indexed256] {
+            assert_eq!(hinted(depth, Background::Dark), Some(Color::Indexed(236)));
+            assert_eq!(hinted(depth, Background::Light), Some(Color::Indexed(254)));
+        }
+        assert_eq!(
+            hinted(ColorDepth::Basic16, Background::Dark),
+            Some(Color::DarkGray)
+        );
+        assert_eq!(
+            hinted(ColorDepth::Basic16, Background::Light),
+            Some(Color::Gray)
+        );
+        // A known palette keeps its exact blend.
+        let known = Theme::resolve(spec(
+            ThemeMode::Auto,
+            ColorDepth::Truecolor,
+            Some(GITHUB_DARK),
+        ));
+        assert_ne!(known.tint().bg, Some(Color::Indexed(236)));
     }
 
     #[test]

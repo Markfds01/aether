@@ -313,7 +313,16 @@ fn only_the_cursor_rows_carry_selection_and_it_bleeds_into_the_padding() {
             let c = &buf[(x, y)];
             let in_band = cursor_rows.contains(&y) && (1..47).contains(&x);
             if in_band {
-                assert!(painted(c, theme.selected()), "({x}, {y}) unselected");
+                assert!(
+                    painted(
+                        c,
+                        Style {
+                            fg: None,
+                            ..theme.selected()
+                        }
+                    ),
+                    "({x}, {y}) unselected"
+                );
             } else {
                 // Only tint()/selected() may paint a background.
                 assert_eq!(c.bg, plain_bg, "({x}, {y}) has a background");
@@ -559,11 +568,23 @@ fn the_cursor_stays_visible_in_a_40_agent_tree() {
         let buf = draw_with(app, 48, 40, &theme, scroll);
         let (x, y) = locate(&buf, &format!(" {name} "), &name);
         assert!(
-            painted(&buf[(x, y)], theme.selected()),
+            painted(
+                &buf[(x, y)],
+                Style {
+                    fg: None,
+                    ..theme.selected()
+                }
+            ),
             "{name} not selected"
         );
         assert!(
-            painted(&buf[(x, y + 1)], theme.selected()),
+            painted(
+                &buf[(x, y + 1)],
+                Style {
+                    fg: None,
+                    ..theme.selected()
+                }
+            ),
             "{name} subtitle cut"
         );
     };

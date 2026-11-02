@@ -845,6 +845,58 @@ fn style_of(lines: &[Line<'static>], needle: &str) -> Style {
         .style
 }
 
+/// A user row is highlighted at every depth, with or without a probed palette
+/// (no reply, DA1 only and the like all leave `palette` unset); mono is plain.
+#[test]
+fn user_rows_keep_their_highlight_without_a_palette() {
+    use crate::ui::theme::tokens::{Rgb, TerminalPalette};
+    use crate::ui::theme::{ColorDepth, ThemeMode};
+    let cells = fixtures();
+    let (_, user) = cells
+        .iter()
+        .find(|(n, _)| *n == "user_operator")
+        .expect("a user fixture");
+    let known = Some(TerminalPalette {
+        fg: Rgb(230, 237, 243),
+        bg: Rgb(13, 17, 23),
+    });
+    for depth in [
+        ColorDepth::Truecolor,
+        ColorDepth::Indexed256,
+        ColorDepth::Basic16,
+    ] {
+        for palette in [None, known] {
+            let theme = Theme::resolve(ThemeSpec {
+                depth,
+                palette,
+                ..ThemeSpec::default()
+            });
+            let rows = user.display_lines(80, &theme);
+            assert!(
+                rows.iter()
+                    .all(|l| l.style != Style::new() && l.style.bg.is_some()),
+                "{depth:?} {palette:?}: a user row is plain"
+            );
+            if depth == ColorDepth::Truecolor && palette.is_some() {
+                // A known palette keeps today's blended tint.
+                assert_eq!(
+                    rows[0].style.bg,
+                    Some(ratatui::style::Color::Rgb(30, 34, 39))
+                );
+            }
+        }
+    }
+    let mono = Theme::resolve(ThemeSpec {
+        mode: ThemeMode::Mono,
+        ..ThemeSpec::default()
+    });
+    assert!(
+        user.display_lines(80, &mono)
+            .iter()
+            .all(|l| l.style == Style::new())
+    );
+}
+
 #[test]
 fn styles_come_from_theme_tokens() {
     let theme = unicode();
