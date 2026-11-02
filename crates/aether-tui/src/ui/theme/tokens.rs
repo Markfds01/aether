@@ -586,8 +586,9 @@ const MIN_BAND_CONTRAST: f64 = 1.15;
 ///
 /// - truecolor and 256 colours: a fixed xterm grey, #303030 (236) on dark and
 ///   #e4e4e4 (254) on light. They stand out from near-black and near-white
-///   backgrounds alike, and a pinned text colour keeps them readable even when the guess is wrong. Truecolor
-///   terminals take the same index; no blend is possible without a bg.
+///   backgrounds alike, and a pinned text colour keeps them readable even
+///   when the guess is wrong. Truecolor terminals take the same index; no
+///   blend is possible without a bg.
 /// - ANSI-16: the terminal's own bright black on dark and white (light grey)
 ///   on light, the only greys a 16-colour terminal offers. A theme that maps
 ///   one of them to its background just shows no band, as before.
