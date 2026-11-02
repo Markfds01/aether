@@ -104,10 +104,28 @@ fn the_selected_row_is_accented_and_highlighted_across_the_popup() {
         let buffer = draw(&app, &popup, &theme, width);
         let y = u16::try_from(top(&popup, &app)).unwrap() + 2;
         assert!(styled(&buffer[(2, y)], theme.accent()));
-        assert!(styled(&buffer[(2, y)], theme.selected()));
-        assert!(styled(&buffer[(width - 1, y)], theme.selected()));
+        assert!(styled(
+            &buffer[(2, y)],
+            Style {
+                fg: None,
+                ..theme.selected()
+            }
+        ));
+        assert!(styled(
+            &buffer[(width - 1, y)],
+            Style {
+                fg: None,
+                ..theme.selected()
+            }
+        ));
         assert!(styled(&buffer[(2, y - 1)], theme.text()));
-        assert!(!styled(&buffer[(width - 1, y - 1)], theme.selected()));
+        assert!(!styled(
+            &buffer[(width - 1, y - 1)],
+            Style {
+                fg: None,
+                ..theme.selected()
+            }
+        ));
         let hints = y + 8;
         assert!(styled(&buffer[(2, hints)], theme.title()));
         assert!(styled(&buffer[(7, hints)], theme.secondary()));

@@ -412,7 +412,10 @@ attributes alone ends the wait at once. Without a palette the user-message
 band, composer and approval blocks still get a background chosen from the
 light/dark guess above: xterm grey #303030 (256-colour index 236) on dark,
 #e4e4e4 (254) on light, and on 16-colour terminals the terminal's own bright
-black on dark and white on light. `mono` stays plain. Aether does not send
+black on dark and white on light. The guess can be wrong (it defaults to
+dark), so these bands also pin the text colour (white on the dark band, black
+on the light one); a wrong guess then shows a dark or light block that still
+reads. `mono` stays plain. Aether does not send
 the query through tmux's DCS passthrough: tmux does not hand the outer
 terminal's reply back to the pane, and before tmux 3.3 passthrough cannot be
 switched off, so it could print stray characters. To give the exact colours
